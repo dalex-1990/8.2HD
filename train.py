@@ -15,23 +15,26 @@ class DQN:
         self.device = device()
         print(f"Using device: {self.device}")
         
+        # Move model creation to GPU
         self.model = nn.Sequential(
-            nn.Linear(state_size, 32),
+            nn.Linear(state_size, 128),  # Increased network size
             nn.ReLU(),
-            nn.Linear(32, 32),
+            nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(32, action_size)
-        )
-        try:
-            self.model = self.model.to(self.device)
-            self.target_model = deepcopy(self.model).to(self.device)
-        except RuntimeError as e:
-            print(f"Error moving model to {self.device}, falling back to CPU: {e}")
-            self.device = "cpu"
-            self.model = self.model.to(self.device)
-            self.target_model = deepcopy(self.model).to(self.device)
+            nn.Linear(128, action_size)
+        ).to(self.device)
+        
+        # Use DataParallel if multiple GPUs are available
+        if torch.cuda.device_count() > 1:
+            print(f"Using {torch.cuda.device_count()} GPUs!")
+            self.model = nn.DataParallel(self.model)
             
+        self.target_model = deepcopy(self.model).to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        
+        # Enable cuDNN benchmarking for better performance
+        torch.backends.cudnn.benchmark = True
+        
         self.gamma = gamma
         self.tau = tau
 
@@ -41,27 +44,40 @@ class DQN:
 
     def act(self, state):
         with torch.no_grad():
-            state = torch.as_tensor(state, dtype=torch.float).to(self.device)
+            # Process state in batches for better GPU utilization
+            state = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
             action = torch.argmax(self.model(state)).cpu().numpy().item()
         return action
 
     def update(self, batch, weights=None):
         state, action, reward, next_state, done = batch
+        
+        # Ensure all tensors are on GPU and in the correct format
+        state = state.to(self.device)
+        action = action.to(self.device)
+        reward = reward.to(self.device)
+        next_state = next_state.to(self.device)
+        done = done.to(self.device)
 
+        # Compute Q-values in a single forward pass
         Q_next = self.target_model(next_state).max(dim=1).values
         Q_target = reward + self.gamma * (1 - done) * Q_next
-        Q = self.model(state)[torch.arange(len(action)), action.to(torch.long).flatten()]
+        Q = self.model(state)[torch.arange(len(action), device=self.device), action.to(torch.long).flatten()]
 
         assert Q.shape == Q_target.shape, f"{Q.shape}, {Q_target.shape}"
 
         if weights is None:
-            weights = torch.ones_like(Q)
+            weights = torch.ones_like(Q, device=self.device)
+        else:
+            weights = weights.to(self.device)
 
         td_error = torch.abs(Q - Q_target).detach()
         loss = torch.mean((Q - Q_target)**2 * weights)
 
         self.optimizer.zero_grad()
         loss.backward()
+        # Gradient clipping for stability
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.optimizer.step()
 
         with torch.no_grad():

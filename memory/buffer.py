@@ -112,14 +112,15 @@ class PrioritizedReplayBuffer:
 
 class ReplayBuffer:
     def __init__(self, state_size, action_size, buffer_size):
-        self.device = device()  # Store device once
+        self.device = device()
+        print(f"Buffer using device: {self.device}")
         
-        # state, action, reward, next_state, done
-        self.state = torch.empty(buffer_size, state_size, dtype=torch.float)
-        self.action = torch.empty(buffer_size, action_size, dtype=torch.float)
-        self.reward = torch.empty(buffer_size, dtype=torch.float)
-        self.next_state = torch.empty(buffer_size, state_size, dtype=torch.float)
-        self.done = torch.empty(buffer_size, dtype=torch.int)
+        # Initialize tensors on GPU
+        self.state = torch.empty(buffer_size, state_size, dtype=torch.float32, device=self.device)
+        self.action = torch.empty(buffer_size, action_size, dtype=torch.float32, device=self.device)
+        self.reward = torch.empty(buffer_size, dtype=torch.float32, device=self.device)
+        self.next_state = torch.empty(buffer_size, state_size, dtype=torch.float32, device=self.device)
+        self.done = torch.empty(buffer_size, dtype=torch.int32, device=self.device)
 
         self.count = 0
         self.real_size = 0
@@ -128,12 +129,12 @@ class ReplayBuffer:
     def add(self, transition):
         state, action, reward, next_state, done = transition
 
-        # store transition in the buffer
-        self.state[self.count] = torch.as_tensor(state)
-        self.action[self.count] = torch.as_tensor(action)
-        self.reward[self.count] = torch.as_tensor(reward)
-        self.next_state[self.count] = torch.as_tensor(next_state)
-        self.done[self.count] = torch.as_tensor(done)
+        # Convert to tensors and move to GPU
+        self.state[self.count] = torch.as_tensor(state, dtype=torch.float32)
+        self.action[self.count] = torch.as_tensor(action, dtype=torch.float32)
+        self.reward[self.count] = torch.as_tensor(reward, dtype=torch.float32)
+        self.next_state[self.count] = torch.as_tensor(next_state, dtype=torch.float32)
+        self.done[self.count] = torch.as_tensor(done, dtype=torch.int32)
 
         # update counters
         self.count = (self.count + 1) % self.size
@@ -142,13 +143,18 @@ class ReplayBuffer:
     def sample(self, batch_size):
         assert self.real_size >= batch_size
 
-        sample_idxs = np.random.choice(self.real_size, batch_size, replace=False)
+        # Sample indices on CPU and move to GPU
+        sample_idxs = torch.tensor(
+            np.random.choice(self.real_size, batch_size, replace=False),
+            device=self.device
+        )
 
+        # All tensors are already on GPU, no need to move them
         batch = (
-            self.state[sample_idxs].to(self.device),
-            self.action[sample_idxs].to(self.device),
-            self.reward[sample_idxs].to(self.device),
-            self.next_state[sample_idxs].to(self.device),
-            self.done[sample_idxs].to(self.device)
+            self.state[sample_idxs],
+            self.action[sample_idxs],
+            self.reward[sample_idxs],
+            self.next_state[sample_idxs],
+            self.done[sample_idxs]
         )
         return batch
