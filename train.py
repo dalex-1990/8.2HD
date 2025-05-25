@@ -15,13 +15,15 @@ class DQN:
         self.device = device()
         print(f"Using device: {self.device}")
         
-        # Move model creation to GPU
+        # Create a larger network with more layers
         self.model = nn.Sequential(
-            nn.Linear(state_size, 128),  # Increased network size
+            nn.Linear(state_size, 256),
             nn.ReLU(),
-            nn.Linear(128, 128),
+            nn.Linear(256, 256),
             nn.ReLU(),
-            nn.Linear(128, action_size)
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, action_size)
         ).to(self.device)
         
         # Use DataParallel if multiple GPUs are available
@@ -30,7 +32,9 @@ class DQN:
             self.model = nn.DataParallel(self.model)
             
         self.target_model = deepcopy(self.model).to(self.device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        
+        # Use a more aggressive optimizer
+        self.optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-5)
         
         # Enable cuDNN benchmarking for better performance
         torch.backends.cudnn.benchmark = True
@@ -46,7 +50,10 @@ class DQN:
         with torch.no_grad():
             # Process state in batches for better GPU utilization
             state = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
-            action = torch.argmax(self.model(state)).cpu().numpy().item()
+            # Use a larger batch size for inference
+            state = state.repeat(32, 1)  # Process 32 copies in parallel
+            q_values = self.model(state)
+            action = torch.argmax(q_values[0]).cpu().numpy().item()
         return action
 
     def update(self, batch, weights=None):
@@ -59,20 +66,21 @@ class DQN:
         next_state = next_state.to(self.device)
         done = done.to(self.device)
 
-        # Compute Q-values in a single forward pass
-        Q_next = self.target_model(next_state).max(dim=1).values
-        Q_target = reward + self.gamma * (1 - done) * Q_next
-        Q = self.model(state)[torch.arange(len(action), device=self.device), action.to(torch.long).flatten()]
+        # Compute Q-values in a single forward pass with gradient scaling
+        with torch.cuda.amp.autocast():  # Enable automatic mixed precision
+            Q_next = self.target_model(next_state).max(dim=1).values
+            Q_target = reward + self.gamma * (1 - done) * Q_next
+            Q = self.model(state)[torch.arange(len(action), device=self.device), action.to(torch.long).flatten()]
 
-        assert Q.shape == Q_target.shape, f"{Q.shape}, {Q_target.shape}"
+            assert Q.shape == Q_target.shape, f"{Q.shape}, {Q_target.shape}"
 
-        if weights is None:
-            weights = torch.ones_like(Q, device=self.device)
-        else:
-            weights = weights.to(self.device)
+            if weights is None:
+                weights = torch.ones_like(Q, device=self.device)
+            else:
+                weights = weights.to(self.device)
 
-        td_error = torch.abs(Q - Q_target).detach()
-        loss = torch.mean((Q - Q_target)**2 * weights)
+            td_error = torch.abs(Q - Q_target).detach()
+            loss = torch.mean((Q - Q_target)**2 * weights)
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -111,6 +119,7 @@ def train(env_name, model, buffer, timesteps=200_000, batch_size=128,
     print(f"Training on: {env_name}, Device: {model.device}, Seed: {seed}")
 
     env = gym.make(env_name)
+    set_seed(env, seed=seed)
 
     rewards_total, stds_total = [], []
     loss_count, total_loss = 0, 0
@@ -120,6 +129,13 @@ def train(env_name, model, buffer, timesteps=200_000, batch_size=128,
 
     done = False
     state, _ = env.reset(seed=seed)
+    
+    # Pre-allocate tensors for batch processing
+    states = torch.zeros(batch_size, env.observation_space.shape[0], dtype=torch.float32, device=model.device)
+    actions = torch.zeros(batch_size, 1, dtype=torch.float32, device=model.device)
+    rewards = torch.zeros(batch_size, dtype=torch.float32, device=model.device)
+    next_states = torch.zeros(batch_size, env.observation_space.shape[0], dtype=torch.float32, device=model.device)
+    dones = torch.zeros(batch_size, dtype=torch.int32, device=model.device)
 
     for step in range(1, timesteps + 1):
         if done:
@@ -147,7 +163,6 @@ def train(env_name, model, buffer, timesteps=200_000, batch_size=128,
             elif isinstance(buffer, PrioritizedReplayBuffer):
                 batch, weights, tree_idxs = buffer.sample(batch_size)
                 loss, td_error = model.update(batch, weights=weights)
-
                 buffer.update_priorities(tree_idxs, td_error.numpy())
             else:
                 raise RuntimeError("Unknown buffer")
@@ -157,7 +172,6 @@ def train(env_name, model, buffer, timesteps=200_000, batch_size=128,
 
             if step % test_every == 0:
                 mean, std = evaluate_policy(env_name, model, episodes=10, seed=seed)
-
                 print(f"Episode: {episodes}, Step: {step}, Reward mean: {mean:.2f}, Reward std: {std:.2f}, Loss: {total_loss / loss_count:.4f}, Eps: {eps}")
 
                 if mean > best_reward:
@@ -204,7 +218,7 @@ if __name__ == "__main__":
             "buffer": {
                 "state_size": 4,
                 "action_size": 1,  # action is discrete
-                "buffer_size": 50_000
+                "buffer_size": 100_000  # Increased buffer size
             },
             "model": {
                 "state_size": 4,
@@ -216,7 +230,7 @@ if __name__ == "__main__":
             "train": {
                 "env_name": "CartPole-v0",
                 "timesteps": 50_000,
-                "batch_size": 64,
+                "batch_size": 512,  # Increased batch size
                 "test_every": 5000,
                 "eps_max": 0.5,
                 "eps_min": 0.05
