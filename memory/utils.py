@@ -3,6 +3,11 @@ import torch
 import random
 import numpy as np
 
+# Set CUDA environment variables
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+os.environ['TORCH_USE_CUDA_DSA'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
 # Global device variable
 _DEVICE = None
 
@@ -35,16 +40,18 @@ def _init_device():
         if torch.cuda.device_count() > 0:
             print(f"Current CUDA device: {torch.cuda.current_device()}")
             print(f"CUDA device name: {torch.cuda.get_device_name(0)}")
+            print(f"CUDA device capability: {torch.cuda.get_device_capability(0)}")
         
         # Set CUDA device
         torch.cuda.set_device(0)
         
-        # Test CUDA with a simple operation
-        with torch.cuda.device(0):
-            x = torch.zeros(1, device="cuda")
-            y = torch.ones(1, device="cuda")
-            z = x + y  # This should work on any CUDA device
-            
+        # Test CUDA with a simple operation using CPU tensor first
+        x = torch.zeros(1)
+        y = torch.ones(1)
+        x = x.cuda()
+        y = y.cuda()
+        z = x + y  # This should work on any CUDA device
+        
         _DEVICE = "cuda"
         print("CUDA initialization successful")
         
