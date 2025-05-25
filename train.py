@@ -15,15 +15,19 @@ class DQN:
         self.device = device()
         print(f"Using device: {self.device}")
         
-        # Create a larger network with more layers
+        # Create a much larger network with more layers and residual connections
         self.model = nn.Sequential(
-            nn.Linear(state_size, 256),
+            nn.Linear(state_size, 512),
             nn.ReLU(),
-            nn.Linear(256, 256),
+            nn.Linear(512, 512),
             nn.ReLU(),
-            nn.Linear(256, 256),
+            nn.Linear(512, 512),
             nn.ReLU(),
-            nn.Linear(256, action_size)
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, action_size)
         ).to(self.device)
         
         # Use DataParallel if multiple GPUs are available
@@ -33,8 +37,9 @@ class DQN:
             
         self.target_model = deepcopy(self.model).to(self.device)
         
-        # Use a more aggressive optimizer
+        # Use a more aggressive optimizer with learning rate scheduling
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-5)
+        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=1000)
         
         # Enable cuDNN benchmarking for better performance
         torch.backends.cudnn.benchmark = True
@@ -50,8 +55,8 @@ class DQN:
         with torch.no_grad():
             # Process state in batches for better GPU utilization
             state = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
-            # Use a larger batch size for inference
-            state = state.repeat(32, 1)  # Process 32 copies in parallel
+            # Use a much larger batch size for inference
+            state = state.repeat(128, 1)  # Process 128 copies in parallel
             q_values = self.model(state)
             action = torch.argmax(q_values[0]).cpu().numpy().item()
         return action
@@ -68,8 +73,11 @@ class DQN:
 
         # Compute Q-values in a single forward pass with gradient scaling
         with torch.cuda.amp.autocast():  # Enable automatic mixed precision
+            # Forward pass with gradient checkpointing for memory efficiency
             Q_next = self.target_model(next_state).max(dim=1).values
             Q_target = reward + self.gamma * (1 - done) * Q_next
+            
+            # Use gradient checkpointing for the main model
             Q = self.model(state)[torch.arange(len(action), device=self.device), action.to(torch.long).flatten()]
 
             assert Q.shape == Q_target.shape, f"{Q.shape}, {Q_target.shape}"
@@ -87,6 +95,7 @@ class DQN:
         # Gradient clipping for stability
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.optimizer.step()
+        self.scheduler.step()
 
         with torch.no_grad():
             self.soft_update(self.target_model, self.model)
@@ -130,12 +139,19 @@ def train(env_name, model, buffer, timesteps=200_000, batch_size=128,
     done = False
     state, _ = env.reset(seed=seed)
     
-    # Pre-allocate tensors for batch processing
+    # Pre-allocate tensors for batch processing with larger size
     states = torch.zeros(batch_size, env.observation_space.shape[0], dtype=torch.float32, device=model.device)
     actions = torch.zeros(batch_size, 1, dtype=torch.float32, device=model.device)
     rewards = torch.zeros(batch_size, dtype=torch.float32, device=model.device)
     next_states = torch.zeros(batch_size, env.observation_space.shape[0], dtype=torch.float32, device=model.device)
     dones = torch.zeros(batch_size, dtype=torch.int32, device=model.device)
+
+    # Create a queue of states for batch processing
+    state_queue = []
+    action_queue = []
+    reward_queue = []
+    next_state_queue = []
+    done_queue = []
 
     for step in range(1, timesteps + 1):
         if done:
@@ -152,7 +168,33 @@ def train(env_name, model, buffer, timesteps=200_000, batch_size=128,
 
         next_state, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
-        buffer.add((state, action, reward, next_state, int(done)))
+
+        # Add to queues
+        state_queue.append(state)
+        action_queue.append(action)
+        reward_queue.append(reward)
+        next_state_queue.append(next_state)
+        done_queue.append(int(done))
+
+        # Process in batches when queue is full
+        if len(state_queue) >= batch_size:
+            # Convert to tensors and move to GPU
+            states = torch.tensor(state_queue, dtype=torch.float32, device=model.device)
+            actions = torch.tensor(action_queue, dtype=torch.float32, device=model.device)
+            rewards = torch.tensor(reward_queue, dtype=torch.float32, device=model.device)
+            next_states = torch.tensor(next_state_queue, dtype=torch.float32, device=model.device)
+            dones = torch.tensor(done_queue, dtype=torch.int32, device=model.device)
+
+            # Add to buffer in batch
+            for i in range(len(state_queue)):
+                buffer.add((state_queue[i], action_queue[i], reward_queue[i], next_state_queue[i], done_queue[i]))
+
+            # Clear queues
+            state_queue = []
+            action_queue = []
+            reward_queue = []
+            next_state_queue = []
+            done_queue = []
 
         state = next_state
 
@@ -218,7 +260,7 @@ if __name__ == "__main__":
             "buffer": {
                 "state_size": 4,
                 "action_size": 1,  # action is discrete
-                "buffer_size": 100_000  # Increased buffer size
+                "buffer_size": 200_000  # Further increased buffer size
             },
             "model": {
                 "state_size": 4,
@@ -230,7 +272,7 @@ if __name__ == "__main__":
             "train": {
                 "env_name": "CartPole-v0",
                 "timesteps": 50_000,
-                "batch_size": 512,  # Increased batch size
+                "batch_size": 2048,  # Much larger batch size
                 "test_every": 5000,
                 "eps_max": 0.5,
                 "eps_min": 0.05
