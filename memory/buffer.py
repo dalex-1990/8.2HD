@@ -9,6 +9,7 @@ from memory.utils import device
 class PrioritizedReplayBuffer:
     def __init__(self, state_size, action_size, buffer_size, eps=1e-2, alpha=0.1, beta=0.1):
         self.tree = SumTree(size=buffer_size)
+        self.device = device()  # Store device once
 
         # PER params
         self.eps = eps  # minimal priority, prevents zero probabilities
@@ -87,11 +88,11 @@ class PrioritizedReplayBuffer:
         weights = weights / weights.max()
 
         batch = (
-            self.state[sample_idxs].to(device()),
-            self.action[sample_idxs].to(device()),
-            self.reward[sample_idxs].to(device()),
-            self.next_state[sample_idxs].to(device()),
-            self.done[sample_idxs].to(device())
+            self.state[sample_idxs].to(self.device),
+            self.action[sample_idxs].to(self.device),
+            self.reward[sample_idxs].to(self.device),
+            self.next_state[sample_idxs].to(self.device),
+            self.done[sample_idxs].to(self.device)
         )
         return batch, weights, tree_idxs
 
@@ -111,6 +112,8 @@ class PrioritizedReplayBuffer:
 
 class ReplayBuffer:
     def __init__(self, state_size, action_size, buffer_size):
+        self.device = device()  # Store device once
+        
         # state, action, reward, next_state, done
         self.state = torch.empty(buffer_size, state_size, dtype=torch.float)
         self.action = torch.empty(buffer_size, action_size, dtype=torch.float)
@@ -142,10 +145,10 @@ class ReplayBuffer:
         sample_idxs = np.random.choice(self.real_size, batch_size, replace=False)
 
         batch = (
-            self.state[sample_idxs].to(device()),
-            self.action[sample_idxs].to(device()),
-            self.reward[sample_idxs].to(device()),
-            self.next_state[sample_idxs].to(device()),
-            self.done[sample_idxs].to(device())
+            self.state[sample_idxs].to(self.device),
+            self.action[sample_idxs].to(self.device),
+            self.reward[sample_idxs].to(self.device),
+            self.next_state[sample_idxs].to(self.device),
+            self.done[sample_idxs].to(self.device)
         )
         return batch
