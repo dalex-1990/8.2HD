@@ -12,5 +12,5 @@ def set_seed(env, seed=0):
     torch.manual_seed(seed)
 
 
-def device(force_cpu=True):
+def device(force_cpu=False):
     return "cuda" if torch.cuda.is_available() and not force_cpu else "cpu"
