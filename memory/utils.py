@@ -13,4 +13,13 @@ def set_seed(env, seed=0):
 
 
 def device(force_cpu=False):
-    return "cuda" if torch.cuda.is_available() and not force_cpu else "cpu"
+    if force_cpu:
+        return "cpu"
+    try:
+        if torch.cuda.is_available():
+            # Test CUDA with a simple operation
+            x = torch.tensor([1.0]).cuda()
+            return "cuda"
+    except RuntimeError:
+        print("CUDA is available but encountered an error. Falling back to CPU.")
+    return "cpu"

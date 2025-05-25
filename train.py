@@ -12,16 +12,26 @@ from memory.buffer import ReplayBuffer, PrioritizedReplayBuffer
 
 class DQN:
     def __init__(self, state_size, action_size, gamma, tau, lr):
+        self.device = device()
+        print(f"Using device: {self.device}")
+        
         self.model = nn.Sequential(
             nn.Linear(state_size, 32),
             nn.ReLU(),
             nn.Linear(32, 32),
             nn.ReLU(),
             nn.Linear(32, action_size)
-        ).to(device())
-        self.target_model = deepcopy(self.model).to(device())
+        )
+        try:
+            self.model = self.model.to(self.device)
+            self.target_model = deepcopy(self.model).to(self.device)
+        except RuntimeError as e:
+            print(f"Error moving model to {self.device}, falling back to CPU: {e}")
+            self.device = "cpu"
+            self.model = self.model.to(self.device)
+            self.target_model = deepcopy(self.model).to(self.device)
+            
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
-
         self.gamma = gamma
         self.tau = tau
 
@@ -31,7 +41,7 @@ class DQN:
 
     def act(self, state):
         with torch.no_grad():
-            state = torch.as_tensor(state, dtype=torch.float).to(device())
+            state = torch.as_tensor(state, dtype=torch.float).to(self.device)
             action = torch.argmax(self.model(state)).cpu().numpy().item()
         return action
 
@@ -82,7 +92,7 @@ def evaluate_policy(env_name, agent, episodes=5, seed=0):
 
 def train(env_name, model, buffer, timesteps=200_000, batch_size=128,
           eps_max=0.1, eps_min=0.0, test_every=5000, seed=0):
-    print(f"Training on: {env_name}, Device: {device()}, Seed: {seed}")
+    print(f"Training on: {env_name}, Device: {model.device}, Seed: {seed}")
 
     env = gym.make(env_name)
 
