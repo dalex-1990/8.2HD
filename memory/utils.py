@@ -25,16 +25,36 @@ def _init_device():
         
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available. This code requires GPU to run.")
-        
+    
     try:
-        # Initialize CUDA
-        torch.cuda.init()
-        # Test CUDA with a simple operation
-        x = torch.tensor([1.0], device="cuda")
-        _DEVICE = "cuda"
-        print(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
+        # Print CUDA information
+        print(f"PyTorch version: {torch.__version__}")
+        print(f"CUDA available: {torch.cuda.is_available()}")
         print(f"CUDA version: {torch.version.cuda}")
+        print(f"CUDA device count: {torch.cuda.device_count()}")
+        if torch.cuda.device_count() > 0:
+            print(f"Current CUDA device: {torch.cuda.current_device()}")
+            print(f"CUDA device name: {torch.cuda.get_device_name(0)}")
+        
+        # Set CUDA device
+        torch.cuda.set_device(0)
+        
+        # Test CUDA with a simple operation
+        with torch.cuda.device(0):
+            x = torch.zeros(1, device="cuda")
+            y = torch.ones(1, device="cuda")
+            z = x + y  # This should work on any CUDA device
+            
+        _DEVICE = "cuda"
+        print("CUDA initialization successful")
+        
     except RuntimeError as e:
+        print("\nCUDA initialization failed. Please check:")
+        print("1. CUDA is properly installed")
+        print("2. NVIDIA drivers are up to date")
+        print("3. PyTorch is installed with CUDA support")
+        print("4. GPU is not being used by another process")
+        print(f"\nDetailed error: {e}")
         raise RuntimeError(f"Failed to initialize CUDA: {e}")
     
     return _DEVICE
